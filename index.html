@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lua 代码格式化（基于 luaparse）</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f0f2f5; padding-top: 2rem; }
+        .container { max-width: 960px; }
+        .card { box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        textarea { font-family: 'Courier New', monospace; font-size: 14px; }
+        .result-box { white-space: pre-wrap; font-family: 'Courier New', monospace; background: #f8f9fa; padding: 15px; border-radius: 5px; min-height: 150px; border: 1px solid #dee2e6; }
+        .btn-group { gap: 8px; flex-wrap: wrap; }
+        .status-ok { color: #155724; background: #d4edda; padding: 8px; border-radius: 4px; }
+        .status-err { color: #721c24; background: #f8d7da; padding: 8px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="text-center mb-3">🔧 Lua 代码格式化（AST 精确版）</h1>
+    <p class="text-center text-muted">统一缩进为 <strong>4 个空格</strong> ｜ 基于 luaparse 解析</p>
+
+    <!-- 加载状态 -->
+    <div id="statusMsg" class="status-ok mb-3">⏳ 正在加载 luaparse.js ...</div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="mb-3">
+                <label for="codeInput" class="form-label">📝 输入或粘贴 Lua 代码</label>
+                <textarea class="form-control" id="codeInput" rows="10" placeholder="-- 在这里输入 Lua 代码"></textarea>
+            </div>
+            <div class="mb-3 d-flex flex-wrap align-items-center gap-2">
+                <label class="btn btn-outline-secondary" for="fileInput">📂 上传 .lua 文件</label>
+                <input type="file" id="fileInput" accept=".lua" style="display:none;">
+                <button id="formatBtn" class="btn btn-primary" disabled>✨ 格式化（4空格）</button>
+                <button id="clearBtn" class="btn btn-secondary">🗑️ 清空</button>
+                <button id="downloadBtn" class="btn btn-success" disabled>⬇️ 下载结果</button>
+            </div>
+            <hr>
+            <h5>📋 格式化结果</h5>
+            <div id="resultArea" class="result-box">等待格式化...</div>
+        </div>
+    </div>
+    <p class="text-center text-muted mt-3"><small>依赖同目录下的 luaparse.js，请确保文件存在。</small></p>
+</div>
+
+<!-- 加载本地 luaparse -->
+<script src="luaparse.js"></script>
+
+<script>
+    // ---- 检查 luaparse 是否加载成功 ----
+    const statusEl = document.getElementById('statusMsg');
+    const formatBtn = document.getElementById('formatBtn');
+    if (typeof luaparse === 'undefined') {
+        statusEl.className = 'status-err';
+        statusEl.innerHTML = '❌ 未找到 luaparse.js，请将文件放在与 HTML 相同的目录下。';
+    } else {
+        statusEl.className = 'status-ok';
+        statusEl.innerHTML = '✅ luaparse.js 加载成功！';
+        formatBtn.disabled = false;
+    }
+
+    // ---- 基于 AST 的格式化（缩进 4 空格） ----
+    function formatLua(code) {
+        if (typeof luaparse === 'undefined') {
+            throw new Error('luaparse 未加载，请检查文件。');
+        }
+        let ast;
+        try {
+            ast = luaparse.parse(code, { comments: true, scope: false });
+        } catch (err) {
+            throw new Error('Lua 语法错误: ' + err.message);
+        }
+
+        let indentLevel = 0;
+        const indentStr = '    ';
+        let output = '';
+
+        function addIndent() {
+            output += indentStr.repeat(indentLevel);
+        }
+
+        function printNode(node) {
+            if (!node) return;
+            switch (node.type) {
+                case 'Chunk':
+                    node.body.forEach(stmt => {
+                        printNode(stmt);
+                        // 在语句后添加换行（除某些特殊情况）
+                        if (stmt.type !== 'FunctionDeclaration' && stmt.type !== 'DoStatement' &&
+                            stmt.type !== 'WhileStatement' && stmt.type !== 'RepeatStatement' &&
+                            stmt.type !== 'IfStatement' && stmt.type !== 'ForNumericStatement' &&
+                            stmt.type !== 'ForGenericStatement') {
+                            if (stmt.type !== 'LabelStatement' && stmt.type !== 'GotoStatement') {
+                                output += '\n';
+                            }
+                        }
+                    });
+                    break;
+                case 'FunctionDeclaration':
+                    addIndent();
+                    output += 'function ';
+                    if (node.identifier) printNode(node.identifier);
+                    output += '(';
+                    if (node.parameters) {
+                        node.parameters.forEach((p, i) => {
+                            printNode(p);
+                            if (i < node.parameters.length - 1) output += ', ';
+                        });
+                    }
+                    output += ')\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'Identifier':
+                    output += node.name;
+                    break;
+                case 'StringLiteral':
+                    output += node.raw;
+                    break;
+                case 'NumericLiteral':
+                    output += node.raw;
+                    break;
+                case 'BooleanLiteral':
+                    output += node.raw;
+                    break;
+                case 'NilLiteral':
+                    output += 'nil';
+                    break;
+                case 'VarargLiteral':
+                    output += '...';
+                    break;
+                case 'AssignmentStatement':
+                    addIndent();
+                    node.variables.forEach((v, i) => {
+                        printNode(v);
+                        if (i < node.variables.length - 1) output += ', ';
+                    });
+                    output += ' = ';
+                    node.init.forEach((v, i) => {
+                        printNode(v);
+                        if (i < node.init.length - 1) output += ', ';
+                    });
+                    output += '\n';
+                    break;
+                case 'LocalStatement':
+                    addIndent();
+                    output += 'local ';
+                    node.variables.forEach((v, i) => {
+                        printNode(v);
+                        if (i < node.variables.length - 1) output += ', ';
+                    });
+                    if (node.init.length > 0) {
+                        output += ' = ';
+                        node.init.forEach((v, i) => {
+                            printNode(v);
+                            if (i < node.init.length - 1) output += ', ';
+                        });
+                    }
+                    output += '\n';
+                    break;
+                case 'CallStatement':
+                    addIndent();
+                    printNode(node.expression);
+                    output += '\n';
+                    break;
+                case 'CallExpression':
+                    printNode(node.base);
+                    output += '(';
+                    node.arguments.forEach((arg, i) => {
+                        printNode(arg);
+                        if (i < node.arguments.length - 1) output += ', ';
+                    });
+                    output += ')';
+                    break;
+                case 'IndexExpression':
+                    printNode(node.base);
+                    output += '[';
+                    printNode(node.index);
+                    output += ']';
+                    break;
+                case 'MemberExpression':
+                    printNode(node.base);
+                    output += '.';
+                    printNode(node.identifier);
+                    break;
+                case 'IfStatement':
+                    addIndent();
+                    output += 'if ';
+                    printNode(node.condition);
+                    output += ' then\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    if (node.elseif) {
+                        let elseIf = node.elseif;
+                        while (elseIf) {
+                            addIndent();
+                            output += 'elseif ';
+                            printNode(elseIf.condition);
+                            output += ' then\n';
+                            indentLevel++;
+                            elseIf.body.forEach(stmt => printNode(stmt));
+                            indentLevel--;
+                            elseIf = elseIf.elseif;
+                        }
+                    }
+                    if (node.else) {
+                        addIndent();
+                        output += 'else\n';
+                        indentLevel++;
+                        node.else.forEach(stmt => printNode(stmt));
+                        indentLevel--;
+                    }
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'WhileStatement':
+                    addIndent();
+                    output += 'while ';
+                    printNode(node.condition);
+                    output += ' do\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'RepeatStatement':
+                    addIndent();
+                    output += 'repeat\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'until ';
+                    printNode(node.condition);
+                    output += '\n';
+                    break;
+                case 'ForNumericStatement':
+                    addIndent();
+                    output += 'for ';
+                    printNode(node.variable);
+                    output += ' = ';
+                    printNode(node.start);
+                    output += ', ';
+                    printNode(node.end);
+                    if (node.step) {
+                        output += ', ';
+                        printNode(node.step);
+                    }
+                    output += ' do\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'ForGenericStatement':
+                    addIndent();
+                    output += 'for ';
+                    node.variables.forEach((v, i) => {
+                        printNode(v);
+                        if (i < node.variables.length - 1) output += ', ';
+                    });
+                    output += ' in ';
+                    node.iterators.forEach((v, i) => {
+                        printNode(v);
+                        if (i < node.iterators.length - 1) output += ', ';
+                    });
+                    output += ' do\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'DoStatement':
+                    addIndent();
+                    output += 'do\n';
+                    indentLevel++;
+                    node.body.forEach(stmt => printNode(stmt));
+                    indentLevel--;
+                    addIndent();
+                    output += 'end\n';
+                    break;
+                case 'ReturnStatement':
+                    addIndent();
+                    output += 'return';
+                    if (node.arguments.length > 0) {
+                        output += ' ';
+                        node.arguments.forEach((arg, i) => {
+                            printNode(arg);
+                            if (i < node.arguments.length - 1) output += ', ';
+                        });
+                    }
+                    output += '\n';
+                    break;
+                case 'BreakStatement':
+                    addIndent();
+                    output += 'break\n';
+                    break;
+                case 'ContinueStatement':
+                    addIndent();
+                    output += 'continue\n';
+                    break;
+                case 'GotoStatement':
+                    addIndent();
+                    output += 'goto ';
+                    printNode(node.label);
+                    output += '\n';
+                    break;
+                case 'LabelStatement':
+                    addIndent();
+                    output += '::';
+                    printNode(node.label);
+                    output += '::\n';
+                    break;
+                case 'UnaryExpression':
+                    output += node.operator;
+                    printNode(node.argument);
+                    break;
+                case 'BinaryExpression':
+                    // 加括号保证优先级，但可酌情优化
+                    output += '(';
+                    printNode(node.left);
+                    output += ' ' + node.operator + ' ';
+                    printNode(node.right);
+                    output += ')';
+                    break;
+                case 'LogicalExpression':
+                    output += '(';
+                    printNode(node.left);
+                    output += ' ' + node.operator + ' ';
+                    printNode(node.right);
+                    output += ')';
+                    break;
+                case 'TableConstructor':
+                    output += '{';
+                    if (node.fields.length > 0) {
+                        output += '\n';
+                        indentLevel++;
+                        node.fields.forEach((field, idx) => {
+                            addIndent();
+                            if (field.key) {
+                                printNode(field.key);
+                                output += ' = ';
+                            }
+                            printNode(field.value);
+                            if (idx < node.fields.length - 1) output += ',';
+                            output += '\n';
+                        });
+                        indentLevel--;
+                        addIndent();
+                    }
+                    output += '}';
+                    break;
+                case 'TableKey':
+                    printNode(node.key);
+                    output += ' = ';
+                    printNode(node.value);
+                    break;
+                case 'TableValue':
+                    printNode(node.value);
+                    break;
+                case 'TableKeyString':
+                    output += node.key.raw + ' = ';
+                    printNode(node.value);
+                    break;
+                case 'Comment':
+                    // luaparse 会保留注释，直接输出
+                    addIndent();
+                    output += node.raw + '\n';
+                    break;
+                default:
+                    if (node.raw) output += node.raw;
+                    else output += node.type;
+                    break;
+            }
+        }
+
+        printNode(ast);
+        return output;
+    }
+
+    // ---- 界面交互 ----
+    const codeInput = document.getElementById('codeInput');
+    const fileInput = document.getElementById('fileInput');
+    const clearBtn = document.getElementById('clearBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const resultArea = document.getElementById('resultArea');
+    let lastFormatted = '';
+
+    // 文件上传
+    fileInput.addEventListener('change', function(e) {
+        const file = this.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            codeInput.value = ev.target.result;
+            fileInput.value = '';
+        };
+        reader.readAsText(file);
+    });
+
+    // 格式化
+    formatBtn.addEventListener('click', function() {
+        const code = codeInput.value;
+        if (!code.trim()) {
+            alert('请输入或上传 Lua 代码');
+            return;
+        }
+        try {
+            const formatted = formatLua(code);
+            resultArea.textContent = formatted;
+            lastFormatted = formatted;
+            downloadBtn.disabled = false;
+        } catch (err) {
+            alert('格式化失败：' + err.message);
+            resultArea.textContent = '错误：' + err.message;
+            downloadBtn.disabled = true;
+        }
+    });
+
+    // 清空
+    clearBtn.addEventListener('click', function() {
+        codeInput.value = '';
+        resultArea.textContent = '等待格式化...';
+        downloadBtn.disabled = true;
+        lastFormatted = '';
+    });
+
+    // 下载
+    downloadBtn.addEventListener('click', function() {
+        if (!lastFormatted) {
+            alert('没有可下载的内容');
+            return;
+        }
+        const blob = new Blob([lastFormatted], { type: 'text/plain;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'formatted.lua';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+    });
+</script>
+</body>
+</html>
